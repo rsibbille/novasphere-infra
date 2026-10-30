@@ -1,0 +1,160 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "envs/**"
+      - "modules/**"
+      - ".github/workflows/**"
+
+  schedule:
+    - cron: "17 3 * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply-dev:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.0"
+
+      - name: Load secret
+        run: |
+          DB_PASSWORD="$(aws ssm get-parameter \
+            --name /novasphere/dev/db_password \
+            --with-decryption \
+            --query Parameter.Value \
+            --output text \
+            --region us-east-1)"
+          echo "::add-mask::$DB_PASSWORD"
+          printf 'TF_VAR_db_password=%s\n' "$DB_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Terraform init
+        working-directory: envs/dev
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        working-directory: envs/dev
+        run: terraform validate
+
+      - name: Terraform plan
+        working-directory: envs/dev
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform apply
+        working-directory: envs/dev
+        run: terraform apply -input=false -auto-approve tfplan
+
+  apply-prod:
+    if: github.event_name == 'push'
+    needs: apply-dev
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.0"
+
+      - name: Load secret
+        run: |
+          DB_PASSWORD="$(aws ssm get-parameter \
+            --name /novasphere/prod/db_password \
+            --with-decryption \
+            --query Parameter.Value \
+            --output text \
+            --region us-east-1)"
+          echo "::add-mask::$DB_PASSWORD"
+          printf 'TF_VAR_db_password=%s\n' "$DB_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Terraform init
+        working-directory: envs/prod
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        working-directory: envs/prod
+        run: terraform validate
+
+      - name: Terraform plan
+        working-directory: envs/prod
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform apply
+        working-directory: envs/prod
+        run: terraform apply -input=false -auto-approve tfplan
+
+  drift:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - dev
+          - prod
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.0"
+
+      - name: Load secret
+        run: |
+          DB_PASSWORD="$(aws ssm get-parameter \
+            --name /novasphere/${{ matrix.environment }}/db_password \
+            --with-decryption \
+            --query Parameter.Value \
+            --output text \
+            --region us-east-1)"
+          echo "::add-mask::$DB_PASSWORD"
+          printf 'TF_VAR_db_password=%s\n' "$DB_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Terraform init
+        working-directory: envs/${{ matrix.environment }}
+        run: terraform init -input=false
+
+      - name: Detect drift
+        working-directory: envs/${{ matrix.environment }}
+        run: terraform plan -input=false -detailed-exitcode
