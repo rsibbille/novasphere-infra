@@ -30,7 +30,7 @@ resource "aws_key_pair" "main" {
 }
 
 module "web" {
-  source = "git::ssh://git@github.com/rsibbille/terraform-aws-ec2-server.git?ref=v1.0.0"
+  source = "git::ssh://git@github.com/rsibbille/terraform-aws-ec2-server.git?ref=v1.1.0"
 
   name          = "web"
   resource_name = "${var.environment}-${var.owner}-web"
@@ -45,7 +45,7 @@ module "web" {
 }
 
 module "monitoring" {
-  source = "git::ssh://git@github.com/rsibbille/terraform-aws-ec2-server.git?ref=v1.0.0"
+  source = "git::ssh://git@github.com/rsibbille/terraform-aws-ec2-server.git?ref=v1.1.0"
 
   name          = "monitoring"
   resource_name = "${var.environment}-${var.owner}-monitoring"
@@ -54,6 +54,7 @@ module "monitoring" {
   key_name      = aws_key_pair.main.key_name
   admin_cidr    = local.my_cidr
   open_ports    = []
+  enable_monitoring_port = true
 }
 
 moved {
