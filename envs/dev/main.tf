@@ -14,65 +14,134 @@ data "aws_ami" "debian" {
   }
 }
 
-# IP publique du poste qui execute Terraform
-data "http" "my_ip" {
-  url = "https://api.ipify.org"
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.0"
+
+  name = "novasphere-${var.environment}"
+  cidr = "10.0.0.0/16"
+
+  azs            = ["us-east-1a", "us-east-1b"]
+  public_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
+
+  enable_nat_gateway      = false
+  map_public_ip_on_launch = true
 }
 
-locals {
-  my_cidr = "${chomp(data.http.my_ip.response_body)}/32"
-  name    = "novasphere-${var.owner}"
+resource "aws_security_group" "alb" {
+  name   = "novasphere-${var.environment}-alb"
+  vpc_id = module.vpc.vpc_id
+
+  ingress {
+    description = "HTTP public"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-resource "aws_key_pair" "main" {
-  key_name   = "${local.name}-key"
-  public_key = file(pathexpand(var.ssh_public_key_path))
+resource "aws_security_group" "web_asg" {
+  name   = "novasphere-${var.environment}-web-asg"
+  vpc_id = module.vpc.vpc_id
+
+  ingress {
+    description     = "HTTP depuis ALB uniquement"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-module "web" {
-  source = "git::ssh://git@github.com/rsibbille/terraform-aws-ec2-server.git?ref=v1.1.0"
-
-  name          = "web"
-  resource_name = "${var.owner}-web"
-  ami_id        = data.aws_ami.debian.id
+resource "aws_launch_template" "web" {
+  name_prefix   = "novasphere-${var.environment}-"
+  image_id      = data.aws_ami.debian.id
   instance_type = var.instance_type
-  key_name      = aws_key_pair.main.key_name
-  admin_cidr    = local.my_cidr
-  open_ports    = [80]
 
-  security_group_description = "SSH restreint a mon IP, HTTP ouvert"
-  ssh_description            = "SSH depuis mon poste uniquement"
+  vpc_security_group_ids = [aws_security_group.web_asg.id]
+
+  user_data = base64encode(
+    file("${path.module}/bootstrap.sh")
+  )
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name = "novasphere-${var.environment}-web-asg"
+    }
+  }
 }
 
-module "monitoring" {
-  source = "git::ssh://git@github.com/rsibbille/terraform-aws-ec2-server.git?ref=v1.1.0"
+resource "aws_lb_target_group" "web" {
+  name     = "novasphere-${var.environment}-web"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = module.vpc.vpc_id
 
-  name          = "monitoring"
-  resource_name = "${var.owner}-monitoring"
-  ami_id        = data.aws_ami.debian.id
-  instance_type = var.instance_type
-  key_name      = aws_key_pair.main.key_name
-  admin_cidr    = local.my_cidr
-  open_ports    = []
-  enable_monitoring_port = true
+  health_check {
+    enabled             = true
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
 }
 
-moved {
-  from = aws_instance.web
-  to   = module.web.aws_instance.this
+resource "aws_lb" "web" {
+  name               = "novasphere-${var.environment}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = module.vpc.public_subnets
 }
 
-moved {
-  from = aws_security_group.web
-  to   = module.web.aws_security_group.this
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.web.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web.arn
+  }
 }
 
-resource "local_file" "inventory" {
-  filename        = "${path.module}/../ansible/inventory.ini"
-  file_permission = "0644"
+resource "aws_autoscaling_group" "web" {
+  name                = "novasphere-${var.environment}-web"
+  min_size            = 2
+  max_size            = 4
+  desired_capacity    = 2
+  vpc_zone_identifier = module.vpc.public_subnets
+  target_group_arns   = [aws_lb_target_group.web.arn]
+  health_check_type   = "ELB"
 
-  content = templatefile("${path.module}/inventory.tftpl", {
-    web_ip        = module.web.public_ip
-    monitoring_ip = module.monitoring.public_ip
-  })
+  launch_template {
+    id      = aws_launch_template.web.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "novasphere-${var.environment}-web-asg"
+    propagate_at_launch = true
+  }
 }
