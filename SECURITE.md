@@ -83,3 +83,35 @@ Exception documentée :
 - `CKV_AWS_260` : l'ALB est volontairement exposé publiquement sur HTTP/80 dans le cadre du laboratoire. Cette exception est explicitement annotée dans le code Terraform.
 
 Les autres alertes concernent notamment HTTPS/TLS, WAF, journalisation ALB, KMS CMK et deletion protection. Elles sont identifiées mais ne sont pas implémentées dans le périmètre actuel du laboratoire.
+
+## GitHub Actions et authentification AWS
+
+L'architecture cible prévoit une authentification GitHub Actions vers AWS avec OIDC afin d'éviter le stockage de clés AWS longue durée.
+
+AWS Academy Learner Lab interdit cependant la création du rôle IAM nécessaire avec `iam:CreateRole`.
+
+Dans le laboratoire, GitHub Actions utilise donc les credentials temporaires de la session AWS Academy via GitHub Actions Secrets :
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN`
+
+Ces credentials expirent avec la session Learner Lab et aucune valeur n'est présente dans le dépôt.
+
+Dans un environnement AWS standard, cette dérogation serait remplacée par un rôle IAM dédié avec une relation de confiance GitHub OIDC et des permissions minimales.
+
+## Hygiène Git
+
+Le dépôt exclut notamment :
+
+- `*.tfstate`
+- `*.tfstate.*`
+- `*.tfvars`
+- `.env`
+- `*.pem`
+
+Les fichiers `terraform.auto.tfvars` utilisés temporairement pendant la mise au point de la CI ont été retirés avant le gel final.
+
+Les variables non sensibles utilisées par la CI sont fournies avec des variables d'environnement `TF_VAR_*`.
+
+Le secret applicatif reste récupéré depuis Parameter Store.
