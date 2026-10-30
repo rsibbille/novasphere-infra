@@ -16,6 +16,12 @@ jobs:
   plan-dev:
     runs-on: ubuntu-latest
 
+    env:
+      TF_VAR_owner: rsi
+      TF_VAR_environment: dev
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_instance_type: t3.micro
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6

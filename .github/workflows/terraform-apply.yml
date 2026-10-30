@@ -27,6 +27,12 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
+    env:
+      TF_VAR_owner: rsi
+      TF_VAR_environment: dev
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_instance_type: t3.micro
+
     steps:
       - uses: actions/checkout@v6
 
@@ -73,6 +79,12 @@ jobs:
     needs: apply-dev
     runs-on: ubuntu-latest
     environment: prod
+
+    env:
+      TF_VAR_owner: rsi
+      TF_VAR_environment: prod
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_instance_type: t3.small
 
     steps:
       - uses: actions/checkout@v6
@@ -139,6 +151,18 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.17.0"
+
+      - name: Set Terraform variables
+        run: |
+          echo "TF_VAR_owner=rsi" >> "$GITHUB_ENV"
+          echo "TF_VAR_aws_region=us-east-1" >> "$GITHUB_ENV"
+          echo "TF_VAR_environment=${{ matrix.environment }}" >> "$GITHUB_ENV"
+
+          if [ "${{ matrix.environment }}" = "prod" ]; then
+            echo "TF_VAR_instance_type=t3.small" >> "$GITHUB_ENV"
+          else
+            echo "TF_VAR_instance_type=t3.micro" >> "$GITHUB_ENV"
+          fi
 
       - name: Load secret
         run: |
