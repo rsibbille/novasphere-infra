@@ -14,6 +14,13 @@ data "aws_ami" "debian" {
   }
 }
 
+resource "aws_ssm_parameter" "db_password" {
+  name             = "/novasphere/${var.environment}/db_password"
+  type             = "SecureString"
+  value_wo         = var.db_password
+  value_wo_version = 2
+}
+
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 6.0"
@@ -29,11 +36,13 @@ module "vpc" {
 }
 
 resource "aws_security_group" "alb" {
-  name   = "novasphere-${var.environment}-alb"
-  vpc_id = module.vpc.vpc_id
+  #checkov:skip=CKV_AWS_260:HTTP public requis par le TP sur le port 80
+  name        = "novasphere-${var.environment}-alb"
+  description = "Managed by Terraform"
+  vpc_id      = module.vpc.vpc_id
 
   ingress {
-    description = "HTTP public"
+    description = "HTTP public vers ALB"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -41,6 +50,7 @@ resource "aws_security_group" "alb" {
   }
 
   egress {
+    description = "Trafic sortant de l ALB"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -49,8 +59,9 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "web_asg" {
-  name   = "novasphere-${var.environment}-web-asg"
-  vpc_id = module.vpc.vpc_id
+  name        = "novasphere-${var.environment}-web-asg"
+  description = "Managed by Terraform"
+  vpc_id      = module.vpc.vpc_id
 
   ingress {
     description     = "HTTP depuis ALB uniquement"
@@ -61,6 +72,7 @@ resource "aws_security_group" "web_asg" {
   }
 
   egress {
+    description = "Trafic sortant des instances web"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -74,6 +86,15 @@ resource "aws_launch_template" "web" {
   instance_type = var.instance_type
 
   vpc_security_group_ids = [aws_security_group.web_asg.id]
+
+  iam_instance_profile {
+    name = "LabInstanceProfile"
+  }
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
 
   user_data = base64encode(
     file("${path.module}/bootstrap.sh")
@@ -107,11 +128,12 @@ resource "aws_lb_target_group" "web" {
 }
 
 resource "aws_lb" "web" {
-  name               = "novasphere-${var.environment}-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = module.vpc.public_subnets
+  name                       = "novasphere-${var.environment}-alb"
+  internal                   = false
+  load_balancer_type         = "application"
+  security_groups            = [aws_security_group.alb.id]
+  subnets                    = module.vpc.public_subnets
+  drop_invalid_header_fields = true
 }
 
 resource "aws_lb_listener" "http" {
@@ -133,6 +155,19 @@ resource "aws_autoscaling_group" "web" {
   vpc_zone_identifier = module.vpc.public_subnets
   target_group_arns   = [aws_lb_target_group.web.arn]
   health_check_type   = "ELB"
+
+  depends_on = [
+    aws_ssm_parameter.db_password
+  ]
+
+  instance_refresh {
+    strategy = "Rolling"
+
+    preferences {
+      min_healthy_percentage = 50
+      instance_warmup        = 60
+    }
+  }
 
   launch_template {
     id      = aws_launch_template.web.id
